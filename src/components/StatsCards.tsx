@@ -1,8 +1,14 @@
 import type { DashboardStats } from '@/lib/types';
 import { formatDateRange } from '@/lib/format';
+import { PeriodFilter } from './PeriodFilter';
 
 interface Props {
   stats: DashboardStats;
+  dateFrom: string;
+  dateTo: string;
+  minDate: string;
+  maxDate: string;
+  onPeriodChange: (from: string, to: string) => void;
 }
 
 interface CardProps {
@@ -32,7 +38,14 @@ function StatCard({ label, value, sub, accent = 'navy' }: CardProps) {
   );
 }
 
-export function StatsCards({ stats }: Props) {
+export function StatsCards({
+  stats,
+  dateFrom,
+  dateTo,
+  minDate,
+  maxDate,
+  onPeriodChange,
+}: Props) {
   const periodLabel = formatDateRange(stats.periodStart, stats.periodEnd);
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
@@ -49,7 +62,13 @@ export function StatsCards({ stats }: Props) {
       />
       <StatCard label="Com análise IA" value={stats.withAnalysis} accent="navy" />
       <StatCard label="Caixa postal" value={stats.voicemail} accent="amber" />
-      <StatCard label="Período" value={periodLabel} sub="dia inicial – final" />
+      <PeriodFilter
+        from={dateFrom}
+        to={dateTo}
+        minDate={minDate}
+        maxDate={maxDate}
+        onChange={onPeriodChange}
+      />
       <StatCard label="Sem resposta" value={stats.noAnswer} accent="red" />
     </div>
   );

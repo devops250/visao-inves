@@ -46,6 +46,9 @@ export default function DashboardPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [filter, setFilter] = useState<CallFilter>('all');
   const [search, setSearch] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [periodTouched, setPeriodTouched] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
@@ -90,21 +93,45 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const stats = useMemo(() => computeStats(calls), [calls]);
+  const { minDate, maxDate } = useMemo(() => {
+    const dates = calls.map((c) => c.startedAt.slice(0, 10)).filter(Boolean).sort();
+    return { minDate: dates[0] || '', maxDate: dates[dates.length - 1] || '' };
+  }, [calls]);
+
+  // When data first loads, default the period filter to the full range.
+  // Don't override if the user has already changed it.
+  useEffect(() => {
+    if (!periodTouched && minDate && maxDate) {
+      setDateFrom(minDate);
+      setDateTo(maxDate);
+    }
+  }, [minDate, maxDate, periodTouched]);
+
+  const periodFilteredCalls = useMemo(() => {
+    if (!dateFrom && !dateTo) return calls;
+    return calls.filter((c) => {
+      const day = c.startedAt.slice(0, 10);
+      if (dateFrom && day < dateFrom) return false;
+      if (dateTo && day > dateTo) return false;
+      return true;
+    });
+  }, [calls, dateFrom, dateTo]);
+
+  const stats = useMemo(() => computeStats(periodFilteredCalls), [periodFilteredCalls]);
 
   const counts: Record<CallFilter, number> = useMemo(
     () => ({
-      all: calls.length,
-      completed: calls.filter((c) => c.status === 'completed').length,
-      'with-analysis': calls.filter((c) => c.analysis !== null).length,
-      voicemail: calls.filter((c) => c.status === 'voicemail').length,
-      'no-answer': calls.filter((c) => c.status === 'no-answer').length,
+      all: periodFilteredCalls.length,
+      completed: periodFilteredCalls.filter((c) => c.status === 'completed').length,
+      'with-analysis': periodFilteredCalls.filter((c) => c.analysis !== null).length,
+      voicemail: periodFilteredCalls.filter((c) => c.status === 'voicemail').length,
+      'no-answer': periodFilteredCalls.filter((c) => c.status === 'no-answer').length,
     }),
-    [calls]
+    [periodFilteredCalls]
   );
 
   const visibleCalls = useMemo(() => {
-    let list = calls;
+    let list = periodFilteredCalls;
     switch (filter) {
       case 'completed':
         list = list.filter((c) => c.status === 'completed');
@@ -129,7 +156,13 @@ export default function DashboardPage() {
       });
     }
     return list;
-  }, [calls, filter, search]);
+  }, [periodFilteredCalls, filter, search]);
+
+  function handlePeriodChange(from: string, to: string) {
+    setDateFrom(from);
+    setDateTo(to);
+    setPeriodTouched(true);
+  }
 
   return (
     <div className="min-h-screen">
@@ -145,7 +178,14 @@ export default function DashboardPage() {
               </div>
             )}
 
-            <StatsCards stats={stats} />
+            <StatsCards
+              stats={stats}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              minDate={minDate}
+              maxDate={maxDate}
+              onPeriodChange={handlePeriodChange}
+            />
             <CampaignProgress stats={stats} fetchedAt={fetchedAt} />
 
             <div className="space-y-3">
