@@ -26,10 +26,17 @@ export async function GET(
     if (id.startsWith('hist_')) {
       const historical = await loadHistorical();
       const item = historical.find((h) => h.id === id);
-      if (!item || !item.driveUrl) {
+      const target = item?.audioUrl || item?.driveUrl;
+      if (!target) {
         return NextResponse.json({ error: 'recording not found' }, { status: 404 });
       }
-      return NextResponse.redirect(item.driveUrl, 302);
+      // For local /audio paths, return absolute URL based on request host
+      if (target.startsWith('/')) {
+        const host = _req.headers.get('host') || 'localhost';
+        const proto = _req.headers.get('x-forwarded-proto') || 'https';
+        return NextResponse.redirect(`${proto}://${host}${target}`, 302);
+      }
+      return NextResponse.redirect(target, 302);
     }
 
     const call = await fetchVapiCall(id);

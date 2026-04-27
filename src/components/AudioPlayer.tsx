@@ -9,7 +9,10 @@ interface Props {
 
 export function AudioPlayer({ call }: Props) {
   const [showTranscript, setShowTranscript] = useState(false);
-  const audioSrc = `/api/calls/${call.id}/recording`;
+  // Local static audio (historical) is served directly; VAPI audio goes through the proxy
+  const audioSrc = call.recordingUrl && call.recordingUrl.startsWith('/')
+    ? call.recordingUrl
+    : `/api/calls/${call.id}/recording`;
 
   return (
     <div className="mt-4 pt-4 border-t border-navy-100 space-y-3 animate-fade-in">

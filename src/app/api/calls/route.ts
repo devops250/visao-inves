@@ -67,7 +67,7 @@ function mapHistorical(h: HistoricalCall): Call {
     endedAt: null,
     duration: h.duration ?? 0,
     status: h.status,
-    recordingUrl: h.driveUrl,
+    recordingUrl: h.audioUrl || h.driveUrl || null,
     transcript: null,
     summary: null,
     analysis: null,
