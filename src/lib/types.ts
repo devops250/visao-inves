@@ -33,7 +33,9 @@ export interface HistoricalCall {
   customerPhone: string;
   customerName: string | null;
   date: string;
+  startedAt?: string;
   driveUrl: string;
+  driveFileId?: string;
   duration: number | null;
   status: Call['status'];
 }

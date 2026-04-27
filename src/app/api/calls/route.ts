@@ -58,7 +58,7 @@ function mapVapiCall(call: any): Call {
 }
 
 function mapHistorical(h: HistoricalCall): Call {
-  const startedAt = `${h.date}T00:00:00.000Z`;
+  const startedAt = h.startedAt || `${h.date}T00:00:00.000Z`;
   return {
     id: h.id,
     customerPhone: h.customerPhone,
@@ -105,19 +105,20 @@ export async function GET() {
     vapiError = err instanceof Error ? err.message : 'unknown VAPI error';
   }
 
-  const seen = new Set<string>();
+  const vapiKeys = new Set<string>();
   const merged: Call[] = [];
 
   for (const call of vapiCalls) {
     const key = dedupeKey(call);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (vapiKeys.has(key)) continue;
+    vapiKeys.add(key);
     merged.push(call);
   }
+  // Historical entries: skip only if a VAPI call already exists for that phone+day,
+  // but allow multiple historical recordings for the same phone+day to coexist.
   for (const call of historicalCalls) {
     const key = dedupeKey(call);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (vapiKeys.has(key)) continue;
     merged.push(call);
   }
 
