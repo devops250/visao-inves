@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  background-color: #f7f9fc;
+  color: #0a1b42;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+audio {
+  width: 100%;
+  height: 40px;
+}
+
+audio::-webkit-media-controls-panel {
+  background-color: #f0f4fc;
+}
