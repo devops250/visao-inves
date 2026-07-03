@@ -10,7 +10,7 @@ export interface Call {
   transcript: string | null;
   summary: string | null;
   analysis: Record<string, any> | null;
-  source: 'vapi' | 'historical';
+  source: 'vapi' | 'elevenlabs' | 'historical';
   cost: number | null;
 }
 

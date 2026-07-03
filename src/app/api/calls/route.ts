@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fetchVapiCalls } from '@/lib/vapi';
+import { fetchElevenLabsCallsWithDetails } from '@/lib/elevenlabs';
 import type { Call, HistoricalCall } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -57,6 +58,92 @@ function mapVapiCall(call: any): Call {
   };
 }
 
+function mapElevenLabsStatus(summary: any, detail: any): Call['status'] {
+  const status = detail?.status ?? summary?.status;
+  if (status === 'in-progress' || status === 'processing' || status === 'initiated') {
+    return 'in-progress';
+  }
+
+  const termination: string = (detail?.metadata?.termination_reason || '').toLowerCase();
+  const resultado =
+    detail?.analysis?.data_collection_results?.resultado_ligacao?.value ||
+    detail?.analysis?.data_collection_results?.resultado_ligacao?.result ||
+    null;
+
+  const toolsUsed: string[] = Array.isArray(detail?.transcript)
+    ? detail.transcript
+        .flatMap((t: any) => t?.tool_calls || [])
+        .map((t: any) => (t?.tool_name || t?.name || '').toLowerCase())
+    : [];
+  const voicemailDetected =
+    toolsUsed.some((t) => t.includes('voicemail')) ||
+    resultado === 'sem_contato' ||
+    termination.includes('voicemail');
+
+  if (status === 'failed' || status === 'error') {
+    if (termination.includes('no-answer') || termination.includes('no_answer')) return 'no-answer';
+    if (termination.includes('busy')) return 'no-answer';
+    return 'failed';
+  }
+
+  if (voicemailDetected) return 'voicemail';
+
+  // Very short calls with no assistant/user exchange are typically not answered.
+  const duration = detail?.metadata?.call_duration_secs ?? summary?.call_duration_secs ?? 0;
+  const messageCount = detail?.transcript?.length ?? summary?.message_count ?? 0;
+  if (duration < 3 && messageCount < 2) return 'no-answer';
+
+  return 'completed';
+}
+
+function flattenTranscript(detail: any): string | null {
+  const t = detail?.transcript;
+  if (!Array.isArray(t) || t.length === 0) return null;
+  return t
+    .map((turn: any) => {
+      const role = (turn?.role || turn?.speaker || 'unknown').toString();
+      const speaker = role === 'agent' ? 'Sofia' : role === 'user' ? 'Lead' : role;
+      const msg = turn?.message || turn?.text || '';
+      return msg ? `[${speaker}] ${msg}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function mapElevenLabsCall(entry: { summary: any; detail: any }): Call {
+  const { summary, detail } = entry;
+  const conversationId = detail?.conversation_id || summary.conversation_id;
+  const startUnix = detail?.metadata?.start_time_unix_secs ?? summary.start_time_unix_secs;
+  const startedAt = startUnix ? new Date(startUnix * 1000).toISOString() : new Date().toISOString();
+  const duration = detail?.metadata?.call_duration_secs ?? summary.call_duration_secs ?? 0;
+  const endedAt = startUnix ? new Date((startUnix + duration) * 1000).toISOString() : null;
+
+  const dyn = detail?.conversation_initiation_client_data?.dynamic_variables || {};
+  const customerName = dyn.name || dyn.first_name || null;
+  const customerPhone =
+    detail?.metadata?.phone_call?.external_number ||
+    detail?.metadata?.phone_call?.to ||
+    dyn.phone ||
+    dyn.telefone ||
+    '';
+
+  return {
+    id: conversationId,
+    customerPhone,
+    customerName,
+    startedAt,
+    endedAt,
+    duration,
+    status: mapElevenLabsStatus(summary, detail),
+    recordingUrl: detail ? `/api/calls/${conversationId}/recording` : null,
+    transcript: flattenTranscript(detail),
+    summary: detail?.analysis?.transcript_summary || null,
+    analysis: detail?.analysis || null,
+    source: 'elevenlabs',
+    cost: null,
+  };
+}
+
 function mapHistorical(h: HistoricalCall): Call {
   const startedAt = h.startedAt || `${h.date}T00:00:00.000Z`;
   return {
@@ -96,29 +183,56 @@ export async function GET() {
   const historical = await loadHistorical();
   const historicalCalls = historical.map(mapHistorical);
 
-  let vapiCalls: Call[] = [];
-  let vapiError: string | null = null;
-  try {
-    const raw = await fetchVapiCalls();
-    vapiCalls = Array.isArray(raw) ? raw.map(mapVapiCall) : [];
-  } catch (err) {
-    vapiError = err instanceof Error ? err.message : 'unknown VAPI error';
-  }
+  const [vapiResult, elevenResult] = await Promise.all([
+    (async () => {
+      try {
+        const raw = await fetchVapiCalls();
+        return {
+          calls: Array.isArray(raw) ? raw.map(mapVapiCall) : [],
+          error: null as string | null,
+        };
+      } catch (err) {
+        return {
+          calls: [] as Call[],
+          error: err instanceof Error ? err.message : 'unknown VAPI error',
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const entries = await fetchElevenLabsCallsWithDetails();
+        return {
+          calls: entries.map(mapElevenLabsCall),
+          error: null as string | null,
+        };
+      } catch (err) {
+        return {
+          calls: [] as Call[],
+          error: err instanceof Error ? err.message : 'unknown ElevenLabs error',
+        };
+      }
+    })(),
+  ]);
 
-  const vapiKeys = new Set<string>();
+  const seenKeys = new Set<string>();
   const merged: Call[] = [];
 
-  for (const call of vapiCalls) {
+  // ElevenLabs first — it's the current source of truth going forward.
+  for (const call of elevenResult.calls) {
     const key = dedupeKey(call);
-    if (vapiKeys.has(key)) continue;
-    vapiKeys.add(key);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
     merged.push(call);
   }
-  // Historical entries: skip only if a VAPI call already exists for that phone+day,
-  // but allow multiple historical recordings for the same phone+day to coexist.
+  for (const call of vapiResult.calls) {
+    const key = dedupeKey(call);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    merged.push(call);
+  }
   for (const call of historicalCalls) {
     const key = dedupeKey(call);
-    if (vapiKeys.has(key)) continue;
+    if (seenKeys.has(key)) continue;
     merged.push(call);
   }
 
@@ -127,7 +241,8 @@ export async function GET() {
   return NextResponse.json(
     {
       calls: merged,
-      vapiError,
+      vapiError: vapiResult.error,
+      elevenLabsError: elevenResult.error,
       fetchedAt: new Date().toISOString(),
     },
     { headers: { 'Cache-Control': 'no-store' } }
