@@ -45,7 +45,7 @@ export function CallCard({ call }: Props) {
 
           <button
             onClick={() => setExpanded((v) => !v)}
-            disabled={!call.recordingUrl && call.source === 'vapi'}
+            disabled={!call.recordingUrl && call.source !== 'historical'}
             className="w-10 h-10 rounded-full bg-navy-600 text-white flex items-center justify-center hover:bg-navy-700 disabled:bg-navy-200 disabled:cursor-not-allowed transition-colors"
             title={expanded ? 'Fechar player' : 'Ouvir gravação'}
           >
