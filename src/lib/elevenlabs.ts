@@ -26,7 +26,53 @@ interface ListResponse {
   has_more?: boolean;
 }
 
-export async function listElevenLabsConversations(maxTotal = 500): Promise<ElevenLabsConversationSummary[]> {
+// Terminal-status detail cache: once a conversation is done it never changes,
+// so we never need to hit the API for it again after the first fetch.
+const detailCache = new Map<string, any>();
+const inFlightDetails = new Map<string, Promise<any>>();
+
+const TERMINAL_STATUSES = new Set([
+  'done',
+  'completed',
+  'ended',
+  'finished',
+  'failed',
+  'error',
+  'terminated',
+]);
+
+function isTerminalDetail(detail: any): boolean {
+  const s = (detail?.status || '').toString().toLowerCase();
+  if (TERMINAL_STATUSES.has(s)) return true;
+  // If status is missing but analysis/transcript are present, treat as terminal.
+  if (!s && (detail?.analysis || Array.isArray(detail?.transcript))) return true;
+  return false;
+}
+
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxAttempts = 3
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    const res = await fetch(url, init);
+    if (res.status !== 429 || attempt >= maxAttempts - 1) return res;
+
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const backoff = Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : 400 * Math.pow(2, attempt);
+    await sleep(backoff);
+    attempt++;
+  }
+}
+
+export async function listElevenLabsConversations(maxTotal = 300): Promise<ElevenLabsConversationSummary[]> {
   const { apiKey, agentId } = getConfig();
   const out: ElevenLabsConversationSummary[] = [];
   let cursor: string | null = null;
@@ -37,9 +83,9 @@ export async function listElevenLabsConversations(maxTotal = 500): Promise<Eleve
     url.searchParams.set('page_size', '100');
     if (cursor) url.searchParams.set('cursor', cursor);
 
-    const res = await fetch(url.toString(), {
+    const res = await fetchWithRetry(url.toString(), {
       headers: { 'xi-api-key': apiKey },
-      next: { revalidate: 0 },
+      cache: 'no-store',
     });
     if (!res.ok) {
       throw new Error(`ElevenLabs list error: ${res.status} ${res.statusText}`);
@@ -53,27 +99,46 @@ export async function listElevenLabsConversations(maxTotal = 500): Promise<Eleve
 }
 
 export async function getElevenLabsConversation(conversationId: string): Promise<any> {
+  const cached = detailCache.get(conversationId);
+  if (cached) return cached;
+
+  const inFlight = inFlightDetails.get(conversationId);
+  if (inFlight) return inFlight;
+
   const { apiKey } = getConfig();
-  const res = await fetch(
-    `${ELEVENLABS_BASE_URL}/v1/convai/conversations/${conversationId}`,
-    {
-      headers: { 'xi-api-key': apiKey },
-      next: { revalidate: 0 },
+  const promise = (async () => {
+    const res = await fetchWithRetry(
+      `${ELEVENLABS_BASE_URL}/v1/convai/conversations/${conversationId}`,
+      {
+        headers: { 'xi-api-key': apiKey },
+        cache: 'no-store',
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`ElevenLabs detail error: ${res.status} ${res.statusText}`);
     }
-  );
-  if (!res.ok) {
-    throw new Error(`ElevenLabs detail error: ${res.status} ${res.statusText}`);
+    const detail = await res.json();
+    if (isTerminalDetail(detail)) {
+      detailCache.set(conversationId, detail);
+    }
+    return detail;
+  })();
+
+  inFlightDetails.set(conversationId, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightDetails.delete(conversationId);
   }
-  return res.json();
 }
 
 export async function getElevenLabsAudio(conversationId: string): Promise<Response> {
   const { apiKey } = getConfig();
-  return fetch(
+  return fetchWithRetry(
     `${ELEVENLABS_BASE_URL}/v1/convai/conversations/${conversationId}/audio`,
     {
       headers: { 'xi-api-key': apiKey },
-      next: { revalidate: 0 },
+      cache: 'no-store',
     }
   );
 }
@@ -96,7 +161,7 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
-export async function fetchElevenLabsCallsWithDetails(maxTotal = 500, concurrency = 10) {
+export async function fetchElevenLabsCallsWithDetails(maxTotal = 300, concurrency = 3) {
   const summaries = await listElevenLabsConversations(maxTotal);
   return mapConcurrent(summaries, concurrency, async (s) => {
     try {

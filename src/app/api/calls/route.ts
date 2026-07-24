@@ -179,7 +179,25 @@ function dedupeKey(c: Call): string {
   return `${phone}_${day}`;
 }
 
-export async function GET() {
+interface CallsPayload {
+  calls: Call[];
+  vapiError: string | null;
+  elevenLabsError: string | null;
+  fetchedAt: string;
+  elevenLabsStale?: boolean;
+}
+
+// Server-side cache aligns with the 30s frontend polling to absorb parallel
+// tabs and clients into a single upstream fetch cycle.
+const RESPONSE_TTL_MS = 30_000;
+let cachedPayload: { data: CallsPayload; ts: number } | null = null;
+let inFlight: Promise<CallsPayload> | null = null;
+
+// Snapshot of the last successful ElevenLabs response so that transient 429s
+// don't collapse the dashboard back to March-only historical data.
+let lastGoodElevenCalls: Call[] | null = null;
+
+async function buildPayload(): Promise<CallsPayload> {
   const historical = await loadHistorical();
   const historicalCalls = historical.map(mapHistorical);
 
@@ -201,15 +219,15 @@ export async function GET() {
     (async () => {
       try {
         const entries = await fetchElevenLabsCallsWithDetails();
-        return {
-          calls: entries.map(mapElevenLabsCall),
-          error: null as string | null,
-        };
+        const calls = entries.map(mapElevenLabsCall);
+        lastGoodElevenCalls = calls;
+        return { calls, error: null as string | null, stale: false };
       } catch (err) {
-        return {
-          calls: [] as Call[],
-          error: err instanceof Error ? err.message : 'unknown ElevenLabs error',
-        };
+        const error = err instanceof Error ? err.message : 'unknown ElevenLabs error';
+        if (lastGoodElevenCalls) {
+          return { calls: lastGoodElevenCalls, error, stale: true };
+        }
+        return { calls: [] as Call[], error, stale: false };
       }
     })(),
   ]);
@@ -238,13 +256,35 @@ export async function GET() {
 
   merged.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 
-  return NextResponse.json(
-    {
-      calls: merged,
-      vapiError: vapiResult.error,
-      elevenLabsError: elevenResult.error,
-      fetchedAt: new Date().toISOString(),
-    },
-    { headers: { 'Cache-Control': 'no-store' } }
-  );
+  return {
+    calls: merged,
+    vapiError: vapiResult.error,
+    elevenLabsError: elevenResult.error,
+    fetchedAt: new Date().toISOString(),
+    elevenLabsStale: elevenResult.stale,
+  };
+}
+
+async function getPayload(): Promise<CallsPayload> {
+  const now = Date.now();
+  if (cachedPayload && now - cachedPayload.ts < RESPONSE_TTL_MS) {
+    return cachedPayload.data;
+  }
+  if (inFlight) return inFlight;
+
+  inFlight = (async () => {
+    try {
+      const data = await buildPayload();
+      cachedPayload = { data, ts: Date.now() };
+      return data;
+    } finally {
+      inFlight = null;
+    }
+  })();
+  return inFlight;
+}
+
+export async function GET() {
+  const data = await getPayload();
+  return NextResponse.json(data, { headers: { 'Cache-Control': 'no-store' } });
 }
