@@ -72,6 +72,17 @@ async function fetchWithRetry(
   }
 }
 
+async function readErrorBody(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return '';
+    const trimmed = text.trim().slice(0, 500);
+    return trimmed ? ` — ${trimmed}` : '';
+  } catch {
+    return '';
+  }
+}
+
 export async function listElevenLabsConversations(maxTotal = 300): Promise<ElevenLabsConversationSummary[]> {
   const { apiKey, agentId } = getConfig();
   const out: ElevenLabsConversationSummary[] = [];
@@ -88,7 +99,8 @@ export async function listElevenLabsConversations(maxTotal = 300): Promise<Eleve
       cache: 'no-store',
     });
     if (!res.ok) {
-      throw new Error(`ElevenLabs list error: ${res.status} ${res.statusText}`);
+      const body = await readErrorBody(res);
+      throw new Error(`ElevenLabs list error: ${res.status} ${res.statusText}${body}`);
     }
     const data = (await res.json()) as ListResponse;
     out.push(...(data.conversations || []));
@@ -115,7 +127,8 @@ export async function getElevenLabsConversation(conversationId: string): Promise
       }
     );
     if (!res.ok) {
-      throw new Error(`ElevenLabs detail error: ${res.status} ${res.statusText}`);
+      const body = await readErrorBody(res);
+      throw new Error(`ElevenLabs detail error: ${res.status} ${res.statusText}${body}`);
     }
     const detail = await res.json();
     if (isTerminalDetail(detail)) {
